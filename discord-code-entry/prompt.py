@@ -1,4 +1,4 @@
-"""Tool-thread side: bind a prompt to the current Discord session, post it, and wait for the code.
+"""Tool-thread side: bind a prompt to the current Discord session, post it, and wait for the answer.
 
 The worker thread blocks here (never the event loop). The wait ends on a submission, /stop, the approval
 timeout, a disconnected adapter, or plugin unload, whichever comes first.
@@ -61,20 +61,21 @@ def current_binding(bots: Mapping[Any, Any]) -> Optional[Binding]:
 
 
 @contextmanager
-def code_prompt_installed(prompt: Callable[[str, str], str]):
-    """Install ``prompt`` as this thread's vault code prompt for one tool call."""
+def prompt_installed(slot: str, prompt: Callable):
+    """Install ``prompt`` as this thread's vault ``slot`` prompt ("code" or "save_login") for one tool call."""
     from agent.vault_backends import unlock
 
-    previous_code, previous_unlock = unlock.get_code_prompt_callback(), unlock.get_unlock_prompt_callback()
-    unlock.set_code_prompt_callback(prompt)
+    get, set_ = getattr(unlock, f"get_{slot}_prompt_callback"), getattr(unlock, f"set_{slot}_prompt_callback")
+    previous, previous_unlock = get(), unlock.get_unlock_prompt_callback()
+    set_(prompt)
     if previous_unlock is None:
         # can_prompt_here() treats the unlock slot as "a human can answer". Discord has no master-password
-        # prompt, so a decliner stands in for this call only; browser_vault_enter_code never unlocks.
+        # prompt, so a decliner stands in for this call only; neither overridden tool unlocks.
         unlock.set_unlock_prompt_callback(lambda _backend, _display_name: "")
     try:
         yield
     finally:
-        unlock.set_code_prompt_callback(previous_code)
+        set_(previous)
         unlock.set_unlock_prompt_callback(previous_unlock)
 
 
@@ -84,31 +85,31 @@ def _timeout_s() -> float:
     return float(_get_approval_timeout())
 
 
-def ask(broker: b.Broker, binding: Binding, site: str) -> str:
-    """Post the button, wait for the user's code, and return it ("" when none arrived)."""
+def ask(broker: b.Broker, binding: Binding, kind: discord_ui.Kind, site: str) -> Any:
+    """Post the button, wait for the user's answer, and return it (None when none arrived)."""
     timeout = _timeout_s()
     pending = broker.open(user_id=binding.user_id, channel_id=binding.channel_id)
     loop = binding.bot.loop
     outcome = b.CANCELLED
     try:
         posting = asyncio.run_coroutine_threadsafe(
-            discord_ui.post(binding.bot, broker, pending, site, timeout), loop)
+            discord_ui.post(binding.bot, broker, kind, pending, site, timeout), loop)
         try:
             posting.result(timeout=_POST_TIMEOUT_S)
         except Exception as exc:
             posting.cancel()
-            logger.warning("code prompt %s: could not post (%s)", pending.prompt_id, type(exc).__name__)
-            raise RuntimeError("Could not post the verification-code button in Discord. Nothing was entered.") from None
+            logger.warning("prompt %s: could not post (%s)", pending.prompt_id, type(exc).__name__)
+            raise RuntimeError(f"Could not post the {kind.button} button in Discord. Nothing was entered.") from None
         outcome = _wait(pending, binding, timeout)
     finally:
         outcome = broker.finish(pending, outcome)
-        logger.info("code prompt %s: %s", pending.prompt_id, outcome)
+        logger.info("prompt %s: %s", pending.prompt_id, outcome)
         if pending.message is not None:
             try:
-                asyncio.run_coroutine_threadsafe(discord_ui.finalize(pending, site, outcome), loop)
+                asyncio.run_coroutine_threadsafe(discord_ui.finalize(kind, pending, site, outcome), loop)
             except RuntimeError:
                 pass  # loop already closed: the bot is gone with its message state
-    return pending.take_code() if outcome == b.SUBMITTED else ""
+    return pending.take_value() if outcome == b.SUBMITTED else None
 
 
 def _wait(pending: b.Pending, binding: Binding, timeout: float) -> str:
@@ -116,7 +117,7 @@ def _wait(pending: b.Pending, binding: Binding, timeout: float) -> str:
     from tools.interrupt import is_interrupted
 
     deadline = time.monotonic() + timeout
-    heartbeat = activity_heartbeat("waiting for the user's verification code")
+    heartbeat = activity_heartbeat("waiting for the user's answer in Discord")
     # Human-wait time is excluded from the tool batch deadline, as for approval prompts.
     with human_wait_window():
         while True:

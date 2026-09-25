@@ -169,7 +169,8 @@ def discord_env(hermes_home, page, monkeypatch):
     bot.stop()
 
 
-def call_tool(manager, *, platform="discord", user_id="111", chat_id="222", thread_id="", args=None):
+def call_tool(manager, *, tool="browser_vault_enter_code", platform="discord", user_id="111", chat_id="222",
+              thread_id="", args=None):
     """Dispatch the tool on a worker thread bound to a gateway session, like the gateway turn does.
     Returns (thread, result box)."""
     from gateway.session_context import set_session_vars
@@ -180,7 +181,7 @@ def call_tool(manager, *, platform="discord", user_id="111", chat_id="222", thre
     def run():
         set_session_vars(platform=platform, user_id=user_id, chat_id=chat_id, thread_id=thread_id,
                          session_key=f"agent:main:{platform}:{chat_id}")
-        box["result"] = registry.dispatch("browser_vault_enter_code", args or {}, scope=manager.scope_key,
+        box["result"] = registry.dispatch(tool, args or {}, scope=manager.scope_key,
                                           task_id="t")
 
     worker = threading.Thread(target=contextvars.Context().run, args=(run,), daemon=True)

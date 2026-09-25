@@ -1,8 +1,8 @@
-"""Pending one-time-code prompts, shared by the waiting tool thread and the Discord event loop.
+"""Pending code and login prompts, shared by the waiting tool thread and the Discord event loop.
 
 Each prompt belongs to one tool invocation and is bound to the Discord user who started the turn and the
 channel the button was posted in. The first valid submission wins; every later or foreign interaction is
-rejected. Nothing here logs or formats a code.
+rejected. Nothing here logs or formats a submitted value.
 """
 
 from __future__ import annotations
@@ -35,11 +35,11 @@ class Pending:
     # Discord-side objects, only touched on the event loop.
     message: Any = None
     view: Any = None
-    _code: Optional[str] = field(default=None, repr=False)
+    _value: Any = field(default=None, repr=False)
 
-    def take_code(self) -> str:
-        code, self._code = self._code or "", None
-        return code
+    def take_value(self) -> Any:
+        value, self._value = self._value, None
+        return value
 
 
 class Broker:
@@ -69,8 +69,8 @@ class Broker:
             return WRONG_CHANNEL
         return None
 
-    def submit(self, prompt_id: str, *, user_id: int, channel_id: Optional[int], code: str) -> Optional[str]:
-        """Hand ``code`` to the waiting tool thread. Returns None on success, else the rejection."""
+    def submit(self, prompt_id: str, *, user_id: int, channel_id: Optional[int], value: Any) -> Optional[str]:
+        """Hand ``value`` to the waiting tool thread. Returns None on success, else the rejection."""
         with self._lock:
             pending = self._pending.get(prompt_id)
             if pending is None:
@@ -80,25 +80,25 @@ class Broker:
             if channel_id != pending.channel_id:
                 return WRONG_CHANNEL
             del self._pending[prompt_id]
-            pending._code = code
+            pending._value = value
             pending.outcome = SUBMITTED
         pending.event.set()
         return None
 
     def finish(self, pending: Pending, outcome: str) -> str:
-        """Close the prompt from the tool thread. A code that landed before this call still counts unless the
+        """Close the prompt from the tool thread. A value that landed before this call still counts unless the
         turn was stopped; returns the final outcome."""
         with self._lock:
             self._pending.pop(pending.prompt_id, None)
             if pending.outcome == SUBMITTED and outcome != STOPPED:
                 return SUBMITTED
-            pending.take_code()
+            pending.take_value()
             pending.outcome = outcome
         pending.event.set()
         return outcome
 
     def cancel_all(self, outcome: str = CANCELLED) -> None:
-        """Wake every waiting thread without a code (plugin unload)."""
+        """Wake every waiting thread without a value (plugin unload)."""
         with self._lock:
             self._closed = True
             pending, self._pending = list(self._pending.values()), {}

@@ -34,8 +34,9 @@ def _tap(env, message, user_id, channel_id):
     return tap
 
 
-def _submit(env, modal, user_id, channel_id, value):
-    modal.code._value = value
+def _submit(env, modal, user_id, channel_id, value, **values):
+    for key, item in modal.inputs.items():
+        item._value = values.get(key, value)
     submit = interaction(user_id, channel_id)
     env.bot.run(modal.on_submit(submit))
     return submit.response.replies
@@ -207,3 +208,64 @@ def test_a_reloaded_plugin_is_rewired_to_the_live_bot(discord_env, monkeypatch):
     _submit(discord_env, modal, 111, 222, CODE)
     worker.join(timeout=5)
     assert json.loads(box["result"])["success"]
+
+
+LOGIN = {"identifier": "me@acme.test", "password": "hunter2 correct-horse"}
+
+
+@pytest.fixture
+def filled_handles(monkeypatch):
+    from tools import browser_vault_tool
+
+    handles = []
+    monkeypatch.setattr(browser_vault_tool, "browser_vault_fill",
+                        lambda handle, task_id=None: handles.append(handle) or json.dumps({"success": True}))
+    return handles
+
+
+def test_login_goes_from_modal_to_vault_and_nowhere_else(discord_env, filled_handles, caplog):
+    from agent.vault_store import get_vault_store
+
+    caplog.set_level(logging.DEBUG)
+    worker, box = call_tool(discord_env.manager, tool="browser_vault_save_login")
+    message = _posted(discord_env)
+    assert message.content.startswith("🔑 <@111>") and "don't mask the password" in message.content
+
+    modal = _tap(discord_env, message, 111, 222).response.modal
+    assert "Both the username" in _submit(discord_env, modal, 111, 222, "", identifier="me@acme.test")[0]
+    replies = _submit(discord_env, modal, 111, 222, None, **LOGIN)
+    worker.join(timeout=5)
+
+    result = json.loads(box["result"])
+    assert result["success"] and result["identifier"] == LOGIN["identifier"]
+    assert filled_handles == [result["handle"]]
+    assert get_vault_store().resolve_secret(result["handle"])["password"] == LOGIN["password"]
+    everything_else = [box["result"], *replies, *_discord_texts(discord_env), caplog.text]
+    assert not any(LOGIN["password"] in text for text in everything_else)
+    _wait_for(lambda: message.edits)
+    assert message.view is None and "received" in message.edits[-1]
+
+
+def test_login_prompt_rejects_other_users_and_stop_saves_nothing(discord_env, filled_handles):
+    from tools.interrupt import set_interrupt
+
+    worker, box = call_tool(discord_env.manager, tool="browser_vault_save_login")
+    message = _posted(discord_env)
+    modal = _tap(discord_env, message, 111, 222).response.modal
+    assert "Only the person" in _submit(discord_env, modal, 999, 222, None, **LOGIN)[0]
+    set_interrupt(True, worker.ident)
+    try:
+        worker.join(timeout=5)
+    finally:
+        set_interrupt(False, worker.ident)
+    assert json.loads(box["result"])["error_type"] == "save_declined"
+    assert "expired or was already used" in _submit(discord_env, modal, 111, 222, None, **LOGIN)[0]
+    _wait_for(lambda: message.edits)
+    assert "Nothing was saved" in message.edits[-1] and filled_handles == []
+
+
+def test_save_login_on_other_surfaces_keeps_the_builtin_behaviour(discord_env):
+    worker, box = call_tool(discord_env.manager, tool="browser_vault_save_login", platform="telegram")
+    worker.join(timeout=5)
+    assert json.loads(box["result"])["error_type"] == "prompt_unavailable"
+    assert discord_env.bot.channels == {}
