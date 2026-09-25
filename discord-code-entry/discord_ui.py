@@ -25,7 +25,7 @@ _REJECTIONS = {
 }
 
 _FINAL_TEXT = {
-    b.SUBMITTED: "🔐 Verification code for **{site}** received. It was not posted here.",
+    b.SUBMITTED: "🔐 Verification code for **{site}** received.",
     b.EXPIRED: "⌛ Code prompt for **{site}** expired. Nothing was entered.",
 }
 _CANCELLED_TEXT = "⏹ Code prompt for **{site}** was cancelled. Nothing was entered."
@@ -112,7 +112,7 @@ def _view_classes():
                 await _reply(interaction, _REJECTIONS[rejection])
                 return
             logger.info("code prompt %s: code submitted", self.pending.prompt_id)
-            await _reply(interaction, "✅ Code sent to the waiting sign-in. It was not posted in the channel.")
+            await _reply(interaction, "✅ Code sent to the waiting sign-in.")
 
         async def on_error(self, interaction, error):
             # Replaces discord.py's default handler so a failure is answered and logged by type only.
