@@ -1,0 +1,10 @@
+name: discord-code-entry
+version: 0.1.0
+description: >
+  Enter a website's one-time verification code from Discord through a private button + modal.
+  The code goes straight to the waiting browser_vault_enter_code call and never enters the chat,
+  the model, the transcript or the logs.
+provides_tools:
+  - browser_vault_enter_code
+capabilities:
+  - tools.override
